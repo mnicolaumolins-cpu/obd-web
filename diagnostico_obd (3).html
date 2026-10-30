@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0a6e8a">
+<title>Diagnóstico OBD-II</title>
+<style>
+:root{color-scheme:light dark;--bg:#eef0f2;--card:#fff;--tx:#161b22;--mut:#5d6773;--bd:#d5dae0;--ac:#0a6e8a;--ok:#17724a;--wa:#9a5b00;--er:#b3261e}
+@media(prefers-color-scheme:dark){:root{--bg:#10151a;--card:#182027;--tx:#e6ebf0;--mut:#98a4b0;--bd:#2a343e;--ac:#4cc3e0;--ok:#4cc38a;--wa:#f0b24a;--er:#ff7b72}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+@media(pointer:coarse){button{min-height:46px;padding:10px 16px}input{font-size:16px}}
+#aviso{display:none;border-left:4px solid var(--er);padding:8px 12px;margin:10px 0 0}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--bd);background:var(--card)}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:0 0 10px}
+main{max-width:980px;margin:0 auto;padding:14px;display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:14px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+button{font:inherit;padding:8px 14px;border-radius:5px;border:1px solid var(--ac);background:var(--ac);color:#fff;cursor:pointer}
+@media(prefers-color-scheme:dark){button{color:#06222b}}
+button.sec{background:transparent;color:var(--ac)}button:disabled{opacity:.4;cursor:default}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+input{font:inherit;width:100%;margin-top:8px;padding:7px;border:1px solid var(--bd);border-radius:5px;background:var(--bg);color:var(--tx)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.t{border:1px solid var(--bd);border-radius:5px;padding:8px 10px}.t b{font-size:22px;font-variant-numeric:tabular-nums}.t span{display:block;color:var(--mut);font-size:12px}
+.f{border-left:4px solid var(--wa);padding:6px 10px;margin-bottom:10px}.f.alta{border-color:var(--er)}.f.baja{border-color:var(--mut)}
+.f h3{margin:0;font-size:15px}.f small{color:var(--mut)}.f ol{margin:4px 0 0 18px;padding:0}
+.mut{color:var(--mut)}pre{margin:0;max-height:180px;overflow:auto;font-size:12px;white-space:pre-wrap}
+#est.on{color:var(--ok)}#rec{color:var(--er)}
+</style></head><body>
+<header><h1>Diagnóstico OBD-II</h1><span id="est" class="mut">Desconectado</span></header>
+<main>
+<section class="card"><div class="row">
+<button id="bRap">Diagnóstico rápido</button><button id="bCon" class="sec">Monitorizar viaje</button><button id="bDemo" class="sec">Modo demo</button><button id="bRapDemo" class="sec">Demo rápido</button>
+<button id="bStop" class="sec" disabled>Detener</button><button id="bDtc" class="sec" disabled>Leer averías (DTC)</button>
+<button id="bCsv" class="sec" disabled>Descargar viaje (CSV)</button><button id="bCopia" class="sec">Copiar informe</button></div>
+<p class="mut" style="margin:10px 0 0">Funciona en Chrome o Edge (Android y PC) y en iPhone con la app gratuita Bluefy. <span id="rec"></span></p>
+<div id="aviso"></div>
+<details><summary class="mut">Opciones avanzadas</summary><input id="uuid" placeholder="UUID de servicio BLE (solo si no aparece el adaptador, ej. 0000fff0-0000-1000-8000-00805f9b34fb)"></details></section>
+<section class="card"><h2>Diagnóstico rápido</h2><div id="rap" class="mut">Pulsa «Diagnóstico rápido» con el coche en contacto, mejor con el motor al ralentí y ya caliente. No hace falta conducir.</div></section>
+<section class="card"><h2>Datos en vivo</h2><div id="live" class="grid"><span class="mut">Conecta el adaptador o prueba el modo demo.</span></div></section>
+<section class="card"><h2>Diagnóstico</h2><div id="diag" class="mut">Sin datos todavía.</div></section>
+<section class="card"><h2>Códigos de avería</h2><div id="dtcs" class="mut">Pulsa «Leer averías» con el coche en contacto.</div></section>
+<section class="card"><h2>Registro</h2><pre id="log"></pre></section>
+</main>
+<script>
+"use strict";
+/* ---------- Datos: PIDs estándar (modo 01) ---------- */
+const PIDS={
+ coolant:{c:"0105",f:a=>a[0]-40,u:"°C",l:"Refrigerante",csv:"Temperatura"},
+ rpm:{c:"010C",f:a=>(a[0]*256+a[1])/4,u:"rpm",l:"RPM",csv:"RPM"},
+ speed:{c:"010D",f:a=>a[0],u:"km/h",l:"Velocidad",csv:"Velocidad"},
+ load:{c:"0104",f:a=>a[0]*100/255,u:"%",l:"Carga motor",csv:"CargaMotor"},
+ stft:{c:"0106",f:a=>(a[0]-128)*100/128,u:"%",l:"Trim corto",csv:"TrimCorto"},
+ ltft:{c:"0107",f:a=>(a[0]-128)*100/128,u:"%",l:"Trim largo",csv:"TrimLargo"},
+ map:{c:"010B",f:a=>a[0],u:"kPa",l:"Presión admisión",csv:"MAP"},
+ iat:{c:"010F",f:a=>a[0]-40,u:"°C",l:"Aire admisión",csv:"IAT"},
+ maf:{c:"0110",f:a=>(a[0]*256+a[1])/100,u:"g/s",l:"Caudal aire",csv:"MAF"},
+ tps:{c:"0111",f:a=>a[0]*100/255,u:"%",l:"Acelerador",csv:"Acelerador"},
+ volt:{c:"0142",f:a=>(a[0]*256+a[1])/1000,u:"V",l:"Tensión",csv:"Voltaje"}
+};
+/* ---------- Reglas de diagnóstico (datos, no código) ----------
+ c: condiciones [variable, operador, valor] (todas deben cumplirse)
+ dur: segundos sostenidos · frec: min eventos en una ventana de segundos · excl: no avisar si ya salta otra regla · tras: segundos desde el inicio · dtc: códigos que confirman
+ causas: de más a menos probable */
+const REGLAS=[
+{id:"sobrecal",t:"Sobrecalentamiento",sev:"alta",c:[["coolant",">",108]],dur:8,dtc:["P0217","P0118","P0117"],
+ causas:["Nivel bajo de refrigerante o fuga","Electroventilador que no arranca","Termostato bloqueado cerrado","Radiador obstruido o bomba de agua defectuosa"]},
+{id:"tempalta",t:"Temperatura elevada",sev:"media",c:[["coolant",">",100]],dur:30,dtc:["P0217"],
+ causas:["Carga alta o tráfico lento","Refrigeración justa (nivel, ventilador)","Inicio de avería de refrigeración"]},
+{id:"frio",t:"El motor no alcanza temperatura",sev:"baja",c:[["coolant","<",70],["speed",">",30]],dur:60,tras:600,dtc:["P0128"],
+ causas:["Termostato bloqueado abierto","Sensor de temperatura defectuoso"]},
+{id:"cargabaja",t:"Tensión de carga baja",sev:"media",c:[["volt","<",13.0],["rpm",">",1200]],dur:15,dtc:["P0562","P0620"],
+ causas:["Alternador con rendimiento bajo","Correa de accesorios floja","Cables o masas con mala conexión","Batería muy degradada"]},
+{id:"cargacrit",t:"Fallo del sistema de carga",sev:"alta",c:[["volt","<",12.0],["rpm",">",1200]],dur:10,dtc:["P0562","P0620","P0622"],
+ causas:["Alternador averiado o regulador fallando","Correa rota o patinando","Batería en cortocircuito o sulfatada"]},
+{id:"intermit",t:"Fallo eléctrico intermitente",sev:"media",c:[["volt","<",12.5],["rpm",">",1200]],frec:{ventana:60,min:4},excl:["cargabaja","cargacrit"],dtc:["P0562","P0563"],
+ causas:["Conexión floja o sulfatada (bornes de batería, masas)","Alternador o regulador que falla de forma intermitente","Correa de accesorios que patina a ratos","Cableado dañado o conector con mal contacto"]},
+{id:"pobre",t:"Mezcla pobre (exceso de aire)",sev:"media",c:[["trim",">",15]],dur:20,dtc:["P0171","P0174"],
+ causas:["Fuga de aire de admisión (manguitos, colector)","Caudalímetro MAF sucio o descalibrado","Presión de combustible baja o filtro obstruido","Inyectores parcialmente obstruidos"]},
+{id:"rica",t:"Mezcla rica (exceso de combustible)",sev:"media",c:[["trim","<",-15]],dur:20,dtc:["P0172","P0175"],
+ causas:["Inyectores con goteo","Sonda lambda defectuosa","Regulador de presión de combustible","Filtro de aire muy sucio"]},
+{id:"desliz",t:"Posible deslizamiento de transmisión",sev:"media",c:[["rpm",">",3800],["speed","<",30],["load","<",70]],dur:5,dtc:["P0700","P0730","P0741"],
+ causas:["Embrague o convertidor desgastado","Nivel o estado del aceite de la caja","Sensor de velocidad o solenoides"]},
+{id:"iat",t:"Aire de admisión muy caliente",sev:"baja",c:[["iat",">",65],["speed",">",30]],dur:30,dtc:["P0112","P0113"],
+ causas:["Toma de aire cerca de zona caliente o conducto dañado","Sensor de temperatura de admisión defectuoso"]}
+];
+/* Catálogo básico de DTC por prefijo (se usa el prefijo más largo que coincida) */
+const DTCS={
+ P0100:["Circuito del caudalímetro MAF",["Caudalímetro sucio o averiado","Cableado o conector"]],
+ P0110:["Sensor de temperatura de admisión",["Sensor averiado","Cableado o conector"]],
+ P0115:["Sensor de temperatura del refrigerante",["Sensor averiado","Cableado o conector"]],
+ P0120:["Sensor de posición del acelerador",["Sensor o mariposa sucios o averiados","Cableado"]],
+ P0128:["Termostato: temperatura por debajo de lo esperado",["Termostato abierto","Sensor de temperatura"]],
+ P0130:["Sonda lambda bancada 1",["Sonda envejecida o averiada","Fuga de escape","Calentador de sonda"]],
+ P0171:["Mezcla pobre, bancada 1",["Fuga de aire","MAF sucio","Presión de combustible baja"]],
+ P0172:["Mezcla rica, bancada 1",["Inyectores con goteo","Sonda lambda","Presión de combustible alta"]],
+ P0174:["Mezcla pobre, bancada 2",["Fuga de aire","MAF sucio","Presión de combustible baja"]],
+ P0175:["Mezcla rica, bancada 2",["Inyectores con goteo","Sonda lambda"]],
+ P0217:["Sobretemperatura del motor",["Falta de refrigerante","Ventilador","Termostato","Bomba de agua"]],
+ P0300:["Fallos de encendido aleatorios",["Bujías o bobinas","Mezcla incorrecta","Compresión baja","Inyectores"]],
+ P0301:["Fallo de encendido en cilindro concreto (P0301-P0308)",["Bujía o bobina de ese cilindro","Inyector de ese cilindro","Compresión de ese cilindro"]],
+ P0335:["Sensor de posición del cigüeñal",["Sensor averiado","Cableado","Rueda fónica dañada"]],
+ P0420:["Eficiencia del catalizador baja, bancada 1",["Catalizador degradado","Sonda lambda trasera","Fuga de escape"]],
+ P0562:["Tensión del sistema baja",["Alternador","Batería","Conexiones eléctricas"]],
+ P0563:["Tensión del sistema alta",["Regulador del alternador","Batería"]],
+ P0700:["Fallo en el sistema de la transmisión",["Consulta la centralita de la caja (código propio del fabricante)"]]
+};
+/* ---------- Utilidades ---------- */
+const $=id=>document.getElementById(id), sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const log=m=>{const p=$("log");p.textContent=new Date().toLocaleTimeString()+"  "+m+"\n"+p.textContent.slice(0,4000)};
+const SERV=[0xfff0,0xffe0,0xffe5,0xfff1,0x18f0,"e7810a71-73ae-499d-8c15-faa9aef0c3f2","49535343-fe7d-4ae5-8fa9-9fafd205e455","6e400001-b5a3-f393-af0a-211d5d62c12e"];
+/* ---------- Transporte ELM327 sobre BLE ---------- */
+const elm={buf:"",pend:null,can:true,
+ async connect(){
+  const extra=$("uuid").value.trim().toLowerCase();
+  const dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:extra?SERV.concat([extra]):SERV});
+  dev.addEventListener("gattserverdisconnected",()=>{log("Adaptador desconectado");stop()});
+  const srv=await dev.gatt.connect();this.dev=dev;
+  for(const s of await srv.getPrimaryServices()){
+   let rx=null,tx=null;
+   for(const ch of await s.getCharacteristics()){
+    if(!rx&&(ch.properties.notify||ch.properties.indicate))rx=ch;
+    if(!tx&&(ch.properties.write||ch.properties.writeWithoutResponse))tx=ch;}
+   if(rx&&tx){this.rx=rx;this.tx=tx;break}}
+  if(!this.tx)throw new Error("No encuentro canal serie BLE. Prueba a indicar el UUID en opciones avanzadas.");
+  await this.rx.startNotifications();
+  this.rx.addEventListener("characteristicvaluechanged",e=>{
+   this.buf+=new TextDecoder().decode(e.target.value);
+   if(this.buf.includes(">")&&this.pend){const f=this.pend;this.pend=null;f(this.buf.replace(">",""))}});
+ },
+ send(cmd,to=3000){return new Promise(async res=>{
+  this.buf="";const tm=setTimeout(()=>{this.pend=null;res(this.buf)},to);
+  this.pend=r=>{clearTimeout(tm);res(r)};
+  const d=new TextEncoder().encode(cmd+"\r");
+  for(let i=0;i<d.length;i+=20){const p=d.slice(i,i+20);
+   if(this.tx.properties.writeWithoutResponse)await this.tx.writeValueWithoutResponse(p);else await this.tx.writeValue(p)}})},
+ async init(){
+  await this.send("ATZ",2500);
+  for(const c of["ATE0","ATL0","ATS0","ATH0","ATSP0"])await this.send(c);
+  const r=await this.send("0100",12000);
+  if(!/4100/.test(r.replace(/\s/g,"")))throw new Error("El coche no responde. ¿Contacto puesto? Respuesta: "+r.trim());
+  const p=(await this.send("ATDPN")).replace(/\s/g,"").toUpperCase();
+  this.can=/[6-9A-C]$/.test(p)&&p!=="A0";log("Protocolo OBD: "+p);
+ }};
+const limpia=r=>r.split(/[\r\n]+/).map(s=>s.replace(/\s/g,"").toUpperCase()).filter(s=>/^[0-9A-F:]+$/.test(s));
+function bytesDe(raw,pref){for(const l of limpia(raw)){const i=l.indexOf(pref);
+ if(i>=0)return (l.slice(i+pref.length).match(/../g)||[]).map(h=>parseInt(h,16))}return null}
+async function leePid(k){
+ if(demo)return demoVal(k);
+ const p=PIDS[k],b=bytesDe(await elm.send(p.c),"41"+p.c.slice(2));
+ return b&&b.length?p.f(b):null}
+/* ---------- DTC ---------- */
+const dtcTxt=h=>{const v=parseInt(h,16);return "PCBU"[v>>14]+((v>>12)&3)+(v&0xfff).toString(16).toUpperCase().padStart(3,"0")};
+async function leeModo(m,pref){
+ const raw=await elm.send(m,8000),msgs=[];
+ for(let l of limpia(raw)){l=l.replace(/^\d:/,"");if(/^[0-9A-F]{3}$/.test(l))continue;
+  if(l.startsWith(pref))msgs.push(l);else if(msgs.length)msgs[msgs.length-1]+=l}
+ const out=[];
+ for(const m2 of msgs){let d=m2.slice(2);if(elm.can)d=d.slice(2);
+  for(let i=0;i+4<=d.length;i+=4){const h=d.slice(i,i+4);if(h!=="0000")out.push(dtcTxt(h))}}
+ return out}
+let dtcActuales=[],dtcInfo={conf:[],pend:[],perm:[]};
+async function leerDtc(){
+ $("bDtc").disabled=true;log("Leyendo averías…");
+ try{
+  let conf,pend,perm,mil="—";
+  if(demo){await sleep(600);conf=["P0171"];pend=["P0300"];perm=[];mil="encendida (1 código)"}
+  else{
+   const s=bytesDe(await elm.send("0101"),"4101");if(s)mil=(s[0]&128?"encendida":"apagada")+" ("+(s[0]&127)+" códigos)";
+   conf=await leeModo("03","43");pend=await leeModo("07","47");perm=await leeModo("0A","4A")}
+  dtcActuales=[...new Set([...conf,...pend,...perm])];dtcInfo={conf,pend,perm,mil};
+  const fila=(t,a)=>a.length?"<h3 style='margin:8px 0 2px;font-size:14px'>"+t+"</h3>"+a.map(c=>{
+    const k=Object.keys(DTCS).filter(p=>c.startsWith(p)).sort((x,y)=>y.length-x.length)[0],d=DTCS[k];
+    return "<div class='f'><h3>"+c+(d?" · "+d[0]:"")+"</h3><small>"+(d?"Causas probables: "+d[1].join("; "):"Código no incluido en el catálogo. Consulta su significado exacto.")+"</small></div>"}).join(""):"";
+  $("dtcs").innerHTML="<p class='mut'>Luz MIL: "+mil+"</p>"+(dtcActuales.length?
+   fila("Confirmados",conf)+fila("Pendientes (aún sin confirmar)",pend)+fila("Permanentes",perm):"<p>No hay códigos de avería almacenados.</p>");
+  log("DTC leídos: "+(dtcActuales.join(", ")||"ninguno"));
+ }catch(e){log("Error DTC: "+e.message)}
+ $("bDtc").disabled=false}
+/* ---------- Motor de reglas ---------- */
+const estado={},vistos=new Map();let t0=0;
+const OPS={">":(a,b)=>a>b,"<":(a,b)=>a<b};
+function evalua(s){
+ let act=[];const sinDatos=[];
+ for(const r of REGLAS){
+  const st=estado[r.id]||(estado[r.id]={since:null});
+  if(r.c.some(([v])=>s[v]==null)){sinDatos.push(r.t);st.since=null;continue}
+  const ok=r.c.every(([v,o,x])=>OPS[o](s[v],x))&&s.t>=(r.tras||0);
+  if(r.frec){const h=st.h||(st.h=[]);if(ok)h.push(s.t);
+   while(h.length&&h[0]<s.t-r.frec.ventana)h.shift();
+   if(h.length>=r.frec.min)act.push(r);continue}
+  if(ok){if(st.since==null)st.since=s.t;
+   if(s.t-st.since>=r.dur)act.push(r)}
+  else st.since=null}
+ const ids=act.map(r=>r.id);
+ act=act.filter(r=>!(r.excl||[]).some(e=>ids.includes(e)));
+ act.forEach(r=>{if(!vistos.has(r.id))vistos.set(r.id,{r,t:s.t})});
+ pinta(act,sinDatos)}
+function pinta(act,sinDatos){
+ const conf=r=>r.dtc.some(c=>dtcActuales.includes(c))?"alta (confirmada por código de avería)":"media (solo datos en vivo)";
+ const caja=(r,vivo)=>"<div class='f "+r.sev+"'><h3>"+r.t+(vivo?"":" <small>(ocurrió durante el viaje)</small>")+"</h3><small>Gravedad: "+r.sev+" · Confianza: "+conf(r)+"</small><ol>"+r.causas.map(c=>"<li>"+c+"</li>").join("")+"</ol></div>";
+ const pasados=[...vistos.values()].filter(v=>!act.includes(v.r));
+ $("diag").innerHTML=(act.length||pasados.length?act.map(r=>caja(r,1)).join("")+pasados.map(v=>caja(v.r,0)).join(""):"<p>Sin anomalías detectadas por ahora.</p>")+
+  (sinDatos.length?"<p class='mut'>No evaluable con este coche (faltan datos): "+sinDatos.join(", ")+".</p>":"")+
+  "<p class='mut'>Aviso: es una orientación basada en datos genéricos OBD-II. Una avería real debe confirmarla un mecánico.</p>"}
+/* ---------- Bucle de lectura ---------- */
+let run=false,demo=false;const muestras=[],fallos={};let ult={};
+async function bucle(){
+ t0=Date.now();
+ while(run){
+  const s={t:(Date.now()-t0)/1000};
+  for(const k in PIDS){if(!run)break;if((fallos[k]||0)>=3)continue;
+   try{const v=await leePid(k);if(v==null)fallos[k]=(fallos[k]||0)+1;else{fallos[k]=0;s[k]=v}}
+   catch(e){log("Error leyendo "+k+": "+e.message);fallos[k]=(fallos[k]||0)+1}
+   if(demo)await sleep(15)}
+  if(!run)break;
+  if(s.stft!=null&&s.ltft!=null)s.trim=s.stft+s.ltft;
+  muestras.push(s);Object.assign(ult,s);
+  $("live").innerHTML=Object.keys(PIDS).map(k=>"<div class='t'><span>"+PIDS[k].l+"</span><b>"+(ult[k]!=null&&fallos[k]<3?ult[k].toFixed(k=="volt"?2:k=="rpm"||k=="speed"||k=="coolant"?0:1):"—")+"</b> <small class='mut'>"+PIDS[k].u+"</small></div>").join("");
+  $("rec").textContent="● Grabando: "+muestras.length+" muestras";
+  evalua(s);
+  if(demo)await sleep(350)}}
+function stop(){run=false;$("est").textContent="Desconectado";$("est").className="mut";
+ $("bStop").disabled=true;$("bRap").disabled=false;$("bCon").disabled=false;$("bDemo").disabled=false;$("bDtc").disabled=true;
+ try{elm.dev&&elm.dev.gatt.connected&&elm.dev.gatt.disconnect()}catch(e){}}
+function arranca(modoDemo){
+ demo=modoDemo;muestras.length=0;vistos.clear();for(const k in estado)delete estado[k];for(const k in fallos)delete fallos[k];ult={};
+ run=true;$("est").textContent=demo?"Modo demo":"Conectado";$("est").className="on";
+ $("bStop").disabled=false;$("bRap").disabled=true;$("bCon").disabled=true;$("bDemo").disabled=true;$("bDtc").disabled=false;$("bCsv").disabled=false;bucle()}
+/* ---------- Demo: viaje simulado con sobrecalentamiento y mezcla pobre ---------- */
+function demoVal(k){
+ const t=(Date.now()-t0)/1000,rn=a=>(Math.random()-.5)*a,rpm=1800+700*Math.sin(t/9);
+ return {coolant:70+Math.min(t,40)*.5+Math.max(0,t-60)*.45+rn(1),rpm:rpm+rn(80),speed:50+25*Math.sin(t/12)+rn(2),
+  load:35+10*Math.sin(t/7),stft:(t>50?12:0)+rn(3),ltft:(t>50?8:0)+rn(1),map:45+rn(3),iat:38+rn(1),maf:9+rn(.6),tps:18+rn(2),volt:14.1+rn(.2)}[k]}
+/* ---------- Descarga CSV (compatible con tu dashboard.py) ---------- */
+function descarga(){
+ const ks=Object.keys(PIDS),cab=["Segundo",...ks.map(k=>PIDS[k].csv)];
+ const filas=muestras.map(s=>[s.t.toFixed(1),...ks.map(k=>s[k]!=null?(+s[k].toFixed(2)):"")].join(","));
+ const d=new Date(),n="viaje_real_"+d.toISOString().slice(0,16).replace(/[-:T]/g,"")+".csv";
+ const blob=new Blob([cab.join(",")+"\n"+filas.join("\n")],{type:"text/csv"}),f=new File([blob],n,{type:"text/csv"});
+ if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).then(()=>log("Compartido "+n)).catch(()=>log("Compartir cancelado"));return}
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+ a.download=n;a.click();log("Descargado "+n+" ("+muestras.length+" muestras)")}
+/* ---------- Diagnóstico rápido (sin conducir) ---------- */
+const REGLAS_INST=[
+{t:"Batería con poca carga",sev:"media",c:[["marcha","<",1],["volt","<",12.4]],causas:["Batería descargada o envejecida","Consumo con el coche parado (luces, alarma)","Bornes sulfatados"]},
+{t:"Batería muy descargada o dañada",sev:"alta",c:[["marcha","<",1],["volt","<",11.8]],causas:["Batería en mal estado o sulfatada","Gran consumo parásito","Conexión de batería floja"]},
+{t:"El alternador no está cargando",sev:"alta",c:[["marcha",">",0],["volt","<",13.0]],causas:["Alternador o regulador averiado","Correa de accesorios floja o rota","Cableado o masa en mal estado"]},
+{t:"Tensión de carga excesiva",sev:"alta",c:[["marcha",">",0],["volt",">",15.0]],causas:["Regulador del alternador defectuoso","Mala conexión de masa","Batería con fallo interno"]},
+{t:"Motor ya sobrecalentado",sev:"alta",c:[["marcha",">",0],["coolant",">",108]],causas:["Nivel bajo de refrigerante o fuga","Electroventilador que no arranca","Termostato bloqueado cerrado"]},
+{t:"Sensor de temperatura sin señal válida (lectura muy baja)",sev:"media",c:[["coolant","<",-30]],causas:["Sensor de temperatura del refrigerante averiado","Cable cortado o conector suelto"]},
+{t:"Sensor de temperatura sin señal válida (lectura muy alta)",sev:"media",c:[["coolant",">",140]],causas:["Cortocircuito en el cable del sensor","Sensor averiado"]},
+{t:"Mezcla pobre aprendida (ajuste largo muy positivo)",sev:"media",c:[["marcha",">",0],["caliente",">",0],["ltft",">",10]],causas:["Fuga de aire de admisión","Caudalímetro MAF sucio","Presión de combustible baja","Inyectores parcialmente obstruidos"]},
+{t:"Mezcla rica aprendida (ajuste largo muy negativo)",sev:"media",c:[["marcha",">",0],["caliente",">",0],["ltft","<",-10]],causas:["Inyectores con goteo","Sonda lambda defectuosa","Filtro de aire muy sucio"]},
+{t:"Ralentí alto con el motor caliente",sev:"baja",c:[["ralenti",">",0],["caliente",">",0],["rpm",">",1200]],causas:["Entrada de aire falsa","Mariposa o válvula de ralentí sucia","Sensor de temperatura que marca de menos"]},
+{t:"Ralentí bajo o inestable",sev:"media",c:[["ralenti",">",0],["caliente",">",0],["rpm","<",550]],causas:["Mariposa o válvula de ralentí sucia","Bujías o inyectores en mal estado","Fuga de aire"]},
+{t:"Presión de admisión alta al ralentí",sev:"baja",c:[["ralenti",">",0],["caliente",">",0],["map",">",60]],causas:["Fuga de vacío importante","Sensor MAP descalibrado"]}
+];
+const MON_G=["Catalizador","Catalizador calefactado","Sistema EVAP","Aire secundario","Aire acondicionado","Sonda lambda","Calefactor de sonda","EGR"];
+const MON_D=["Catalizador NMHC","Catalizador NOx/SCR","","Presión del turbo","","Sensor de gases de escape","Filtro de partículas","EGR/VVT"];
+function monitores(b){const diesel=!!(b[1]&8),out=[];
+ [[0,"Fallos de encendido"],[1,"Sistema de combustible"],[2,"Componentes"]].forEach(([i,n])=>{if(b[1]&(1<<i))out.push([n,!(b[1]&(16<<i))])});
+ (diesel?MON_D:MON_G).forEach((n,i)=>{if(n&&(b[2]&(1<<i)))out.push([n,!(b[3]&(1<<i))])});return out}
+async function leeFF(){
+ if(demo)return {dtc:"P0171",coolant:92,rpm:2100,speed:62,load:55,stft:6,ltft:12};
+ const o={},d=bytesDe(await elm.send("020200"),"420200");
+ if(d&&d.length>=2){const h=d.slice(0,2).map(x=>x.toString(16).padStart(2,"0")).join("");if(h!=="0000")o.dtc=dtcTxt(h)}
+ for(const k of["coolant","rpm","speed","load","stft","ltft"]){const q=PIDS[k].c.slice(2),b=bytesDe(await elm.send("02"+q+"00"),"42"+q+"00");if(b&&b.length)o[k]=PIDS[k].f(b)}
+ return o}
+async function rapido(){
+ const R=$("rap"),s={};R.innerHTML="<p class='mut'>Leyendo el coche… puede tardar entre 20 y 40 segundos.</p>";
+ if(demo)t0=Date.now()-75000;
+ for(const k in PIDS){try{const v=await leePid(k);if(v!=null)s[k]=v}catch(e){log("Error leyendo "+k)}}
+ s.marcha=s.rpm>400?1:0;s.ralenti=s.marcha&&s.speed<1?1:0;s.caliente=s.coolant>70?1:0;
+ let mon=[];
+ if(demo)mon=[["Fallos de encendido",true],["Sistema de combustible",true],["Catalizador",false],["Sistema EVAP",false],["Sonda lambda",true]];
+ else{const b=bytesDe(await elm.send("0101"),"4101");if(b&&b.length>=4)mon=monitores(b)}
+ await leerDtc();const ff=await leeFF(),dc=dtcInfo;
+ const hall=REGLAS_INST.filter(r=>r.c.every(([v,o,x])=>s[v]!=null&&OPS[o](s[v],x)));
+ const pend=mon.filter(m=>!m[1]);
+ const rojo=dc.conf.length>0||hall.some(r=>r.sev=="alta"),amar=dc.pend.length+dc.perm.length>0||hall.length>0||pend.length>0;
+ const [col,tit]=rojo?["var(--er)","Hay problemas que revisar"]:amar?["var(--wa)","Atención: hay avisos"]:["var(--ok)","No se detecta ningún problema con estas pruebas"];
+ const num=(k,u,d)=>ff[k]!=null?({coolant:"refrigerante",rpm:"régimen",speed:"velocidad",load:"carga",stft:"ajuste corto",ltft:"ajuste largo"})[k]+" "+ff[k].toFixed(d||0)+" "+u:"";
+ const ffTxt=Object.keys(ff).length?"<p class='mut'>Datos congelados cuando el coche registró la avería"+(ff.dtc?" "+ff.dtc:"")+": "+[num("coolant","°C"),num("rpm","rpm"),num("speed","km/h"),num("load","%"),num("stft","%",1),num("ltft","%",1)].filter(Boolean).join(", ")+".</p>":"<p class='mut'>Este coche no ha guardado datos congelados.</p>";
+ R.innerHTML="<h3 style='margin:0 0 6px;color:"+col+"'>"+tit+"</h3>"+
+  "<p class='mut'>"+(s.marcha?"Motor en marcha"+(s.caliente?" y caliente.":" pero todavía frío: algunas pruebas no son concluyentes."):"Contacto puesto con el motor parado: solo se evalúan batería, sensores y averías. Con el motor al ralentí y caliente el diagnóstico es más completo.")+" Luz MIL: "+(dc.mil||"—")+".</p>"+
+  (hall.length?"<h3 style='font-size:14px;margin:8px 0 4px'>Hallazgos de los sensores</h3>"+hall.map(r=>"<div class='f "+r.sev+"'><h3>"+r.t+"</h3><small>Gravedad: "+r.sev+" · Confianza: media (lectura puntual)</small><ol>"+r.causas.map(c=>"<li>"+c+"</li>").join("")+"</ol></div>").join(""):"")+
+  "<h3 style='font-size:14px;margin:8px 0 4px'>Autodiagnóstico del coche</h3>"+(mon.length?"<p>"+mon.map(m=>(m[1]?"✔ ":"… ")+m[0]+(m[1]?"":" (aún sin probar)")).join(" · ")+"</p>"+(pend.length?"<p class='mut'>Las pruebas pendientes se completan conduciendo con normalidad. Si se borraron las averías hace poco, es normal que falten: un fallo puede estar sin detectar todavía.</p>":""):"<p class='mut'>El coche no informa de sus pruebas.</p>")+
+  ffTxt+"<p class='mut'>Los códigos de avería aparecen en la tarjeta «Códigos de avería». Un resultado verde significa que estas pruebas no ven nada, no que el coche esté garantizado.</p>";
+ log("Diagnóstico rápido terminado");}
+/* ---------- Móvil: avisos, pantalla encendida, compartir, copiar ---------- */
+const esIOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+function sinBT(){const a=$("aviso");a.style.display="block";
+ a.innerHTML=esIOS?"<b>En iPhone, Safari y Chrome no permiten Bluetooth web.</b> Instala la app gratuita <b>Bluefy</b> (App Store), abre esta misma página dentro de Bluefy y vuelve a pulsar el botón."
+  :"<b>Este navegador no admite Bluetooth web.</b> Usa Chrome o Edge en Android o PC.";
+ log("Bluetooth web no disponible en este navegador")}
+if(!navigator.bluetooth)sinBT();
+async function pantalla(){try{await navigator.wakeLock.request("screen")}catch(e){}}
+async function copia(){
+ const t=["DIAGNÓSTICO RÁPIDO",$("rap").innerText,"AVERÍAS",$("dtcs").innerText,"DIAGNÓSTICO EN VIVO",$("diag").innerText,"REGISTRO",$("log").textContent].join("\n\n");
+ try{await navigator.clipboard.writeText(t);log("Informe copiado. Pégalo en un mensaje o nota.")}catch(e){log("No se pudo copiar automáticamente")}}
+/* ---------- Eventos ---------- */
+const conectado=()=>elm.dev&&elm.dev.gatt.connected;
+$("bRap").onclick=async()=>{
+ if(!navigator.bluetooth){sinBT();return}
+ try{$("est").textContent="Conectando…";demo=false;if(!conectado()){await elm.connect();await elm.init()}
+  $("est").textContent="Conectado";$("est").className="on";$("bStop").disabled=false;$("bRap").disabled=true;pantalla();await rapido();$("bRap").disabled=false}
+ catch(e){log("Error: "+e.message);$("est").textContent="Desconectado";$("bRap").disabled=false}};
+$("bRapDemo").onclick=async()=>{demo=true;$("bDtc").disabled=false;await rapido();$("bDtc").disabled=true};
+$("bCon").onclick=async()=>{
+ if(!navigator.bluetooth){sinBT();return}
+ try{$("est").textContent="Conectando…";if(!conectado()){await elm.connect();await elm.init()}pantalla();arranca(false)}
+ catch(e){log("Error: "+e.message);$("est").textContent="Desconectado"}};
+$("bDemo").onclick=()=>arranca(true);
+$("bStop").onclick=stop;$("bDtc").onclick=leerDtc;$("bCsv").onclick=descarga;$("bCopia").onclick=copia;
+</script></body></html>
